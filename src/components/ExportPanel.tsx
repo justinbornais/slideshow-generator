@@ -519,7 +519,13 @@ export function ExportPanel() {
       setProgress(95);
 
       const data = await ffmpeg.readFile('output.mp4');
-      const blob = new Blob([data], { type: 'video/mp4' });
+      const videoBytes = typeof data === 'string' ? new TextEncoder().encode(data) : Uint8Array.from(data);
+      const blob = new Blob([
+        videoBytes.buffer.slice(
+          videoBytes.byteOffset,
+          videoBytes.byteOffset + videoBytes.byteLength
+        ),
+      ], { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
 
       const a = document.createElement('a');

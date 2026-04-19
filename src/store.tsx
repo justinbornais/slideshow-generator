@@ -1,4 +1,5 @@
-import { createContext, useContext, useReducer, ReactNode } from 'react';
+import { createContext, useContext, useReducer } from 'react';
+import type { ReactNode } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   SlideshowState,
@@ -6,7 +7,6 @@ import type {
   AudioTrack,
   SlideshowSettings,
   TextOverlay,
-  TransitionType,
 } from './types';
 
 const defaultSettings: SlideshowSettings = {
