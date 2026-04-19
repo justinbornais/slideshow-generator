@@ -71,6 +71,19 @@ export function Preview() {
       const { index, slide, timeInSlide, duration } = info;
       const nextSlide = index < state.slides.length - 1 ? state.slides[index + 1] : null;
 
+      // Intro transition for first slide
+      if (index === 0 && state.settings.introTransition !== 'none') {
+        const introDur = state.settings.introTransitionDuration;
+        if (timeInSlide < introDur) {
+          const introProgress = timeInSlide / introDur;
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, width, height);
+          drawTransition(ctx, slide, width, height, introProgress, state.settings.introTransition);
+          drawTextOverlays(ctx, slide, width, height);
+          return;
+        }
+      }
+
       // Determine transition
       const transitionDuration = nextSlide ? nextSlide.transitionDuration : 0;
       const transitionProgress =
@@ -321,14 +334,15 @@ export function Preview() {
 
   const handlePlayPause = () => {
     if (state.slides.length === 0) return;
-    setIsPlaying(!isPlaying);
-  };
-
-  const handleStop = () => {
-    setIsPlaying(false);
-    setCurrentTime(0);
-    stopAudio();
-    drawFrame(0);
+    if (isPlaying) {
+      // Stop: reset to beginning
+      setIsPlaying(false);
+      setCurrentTime(0);
+      stopAudio();
+      drawFrame(0);
+    } else {
+      setIsPlaying(true);
+    }
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -361,9 +375,8 @@ export function Preview() {
       </div>
       <div className="preview-controls">
         <button onClick={handlePlayPause} className="btn-primary">
-          {isPlaying ? '⏸ Pause' : '▶ Play'}
+          {isPlaying ? '⏹ Stop' : '▶ Play'}
         </button>
-        <button onClick={handleStop}>⏹ Stop</button>
         <span className="time-display">
           {formatTime(currentTime)} / {formatTime(totalDuration)}
         </span>

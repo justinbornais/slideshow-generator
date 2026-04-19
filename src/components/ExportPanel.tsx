@@ -16,7 +16,7 @@ export function ExportPanel() {
 
     const ffmpeg = new FFmpeg();
     ffmpeg.on('progress', ({ progress: p }) => {
-      setProgress(Math.round(p * 100));
+      setProgress(50 + Math.round(p * 50));
     });
     ffmpeg.on('log', ({ message }) => {
       console.log('[FFmpeg]', message);
@@ -32,187 +32,139 @@ export function ExportPanel() {
     return ffmpeg;
   };
 
-  const renderFrameToBlob = useCallback(
-    async (
-      time: number,
-      width: number,
-      height: number,
-      imageCache: Map<string, HTMLImageElement>
-    ): Promise<Uint8Array> => {
-      const canvas = new OffscreenCanvas(width, height);
-      const ctx = canvas.getContext('2d')!;
-      const durations = getComputedDurations();
-
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, width, height);
-
-      // Find current slide
-      let accumulated = 0;
-      let slideIndex = 0;
-      let timeInSlide = 0;
-      let slideDuration = 0;
-
-      for (let i = 0; i < state.slides.length; i++) {
-        const dur = durations[i] || 5;
-        if (time < accumulated + dur) {
-          slideIndex = i;
-          timeInSlide = time - accumulated;
-          slideDuration = dur;
-          break;
-        }
-        accumulated += dur;
-        if (i === state.slides.length - 1) {
-          slideIndex = i;
-          timeInSlide = dur;
-          slideDuration = dur;
-        }
-      }
-
-      const slide = state.slides[slideIndex];
-      const nextSlide =
-        slideIndex < state.slides.length - 1 ? state.slides[slideIndex + 1] : null;
-
-      // Draw current slide
-      drawSlideOnCanvas(ctx, slide, width, height, imageCache);
-
-      // Draw transition
-      if (nextSlide) {
-        const transitionDuration = nextSlide.transitionDuration;
-        if (timeInSlide > slideDuration - transitionDuration) {
-          const progress =
-            (timeInSlide - (slideDuration - transitionDuration)) / transitionDuration;
-          drawTransitionOnCanvas(
-            ctx,
-            nextSlide,
-            width,
-            height,
-            progress,
-            nextSlide.transition,
-            imageCache
-          );
-        }
-      }
-
-      // Draw text overlays
-      for (const overlay of slide.textOverlays) {
-        const x = (overlay.x / 100) * width;
-        const y = (overlay.y / 100) * height;
-        const scaledFontSize = (overlay.fontSize / 1080) * height;
-        ctx.save();
-        ctx.font = `${overlay.italic ? 'italic ' : ''}${overlay.bold ? 'bold ' : ''}${scaledFontSize}px ${overlay.fontFamily}`;
-        ctx.fillStyle = overlay.color;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0,0,0,0.7)';
-        ctx.shadowBlur = 4;
-        ctx.shadowOffsetX = 2;
-        ctx.shadowOffsetY = 2;
-        ctx.fillText(overlay.text, x, y);
-        ctx.restore();
-      }
-
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
-      const buffer = await blob.arrayBuffer();
-      return new Uint8Array(buffer);
-    },
-    [state.slides, getComputedDurations]
-  );
-
-  const drawSlideOnCanvas = (
-    ctx: OffscreenCanvasRenderingContext2D,
+  // Pre-render a slide image to an offscreen canvas for reuse
+  const renderSlideImage = (
     slide: Slide,
     width: number,
     height: number,
     imageCache: Map<string, HTMLImageElement>
-  ) => {
+  ): OffscreenCanvas | null => {
     const img = imageCache.get(slide.imageUrl);
-    if (!img) return;
-
+    if (!img) return null;
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, width, height);
     const imgRatio = img.width / img.height;
     const canvasRatio = width / height;
     let dw, dh, dx, dy;
     if (imgRatio > canvasRatio) {
-      dh = height;
-      dw = height * imgRatio;
-      dx = (width - dw) / 2;
-      dy = 0;
+      dh = height; dw = height * imgRatio; dx = (width - dw) / 2; dy = 0;
     } else {
-      dw = width;
-      dh = width / imgRatio;
-      dx = 0;
-      dy = (height - dh) / 2;
+      dw = width; dh = width / imgRatio; dx = 0; dy = (height - dh) / 2;
     }
     ctx.drawImage(img, dx, dy, dw, dh);
+    // Draw text overlays
+    for (const overlay of slide.textOverlays) {
+      const x = (overlay.x / 100) * width;
+      const y = (overlay.y / 100) * height;
+      const scaledFontSize = (overlay.fontSize / 1080) * height;
+      ctx.save();
+      ctx.font = `${overlay.italic ? 'italic ' : ''}${overlay.bold ? 'bold ' : ''}${scaledFontSize}px ${overlay.fontFamily}`;
+      ctx.fillStyle = overlay.color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = 'rgba(0,0,0,0.7)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetX = 2;
+      ctx.shadowOffsetY = 2;
+      ctx.fillText(overlay.text, x, y);
+      ctx.restore();
+    }
+    return canvas;
   };
 
-  const drawTransitionOnCanvas = (
+  const drawTransitionFrame = useCallback((
     ctx: OffscreenCanvasRenderingContext2D,
-    slide: Slide,
+    slideCanvas: OffscreenCanvas,
+    nextCanvas: OffscreenCanvas | null,
     width: number,
     height: number,
-    progress: number,
+    transitionProgress: number,
     transition: TransitionType,
-    imageCache: Map<string, HTMLImageElement>
+    introProgress?: number,
+    introTransition?: TransitionType
   ) => {
-    const img = imageCache.get(slide.imageUrl);
-    if (!img) return;
-
-    const imgRatio = img.width / img.height;
-    const canvasRatio = width / height;
-    let dw, dh, dx, dy;
-    if (imgRatio > canvasRatio) {
-      dh = height;
-      dw = height * imgRatio;
-      dx = (width - dw) / 2;
-      dy = 0;
-    } else {
-      dw = width;
-      dh = width / imgRatio;
-      dx = 0;
-      dy = (height - dh) / 2;
-    }
-
-    ctx.save();
-    switch (transition) {
-      case 'fade':
-      case 'dissolve':
-        ctx.globalAlpha = progress;
-        ctx.drawImage(img, dx, dy, dw, dh);
-        break;
-      case 'slide-left':
-        ctx.drawImage(img, width - width * progress + dx, dy, dw, dh);
-        break;
-      case 'slide-right':
-        ctx.drawImage(img, -width + width * progress + dx, dy, dw, dh);
-        break;
-      case 'slide-up':
-        ctx.drawImage(img, dx, height - height * progress + dy, dw, dh);
-        break;
-      case 'slide-down':
-        ctx.drawImage(img, dx, -height + height * progress + dy, dw, dh);
-        break;
-      case 'zoom-in': {
-        ctx.globalAlpha = progress;
-        const zw = dw * progress;
-        const zh = dh * progress;
-        ctx.drawImage(img, (width - zw) / 2, (height - zh) / 2, zw, zh);
-        break;
-      }
-      case 'zoom-out': {
-        ctx.globalAlpha = progress;
-        const scale = 2 - progress;
-        const zw2 = dw * scale;
-        const zh2 = dh * scale;
-        ctx.drawImage(img, (width - zw2) / 2, (height - zh2) / 2, zw2, zh2);
-        break;
-      }
-      default:
-        if (progress > 0.5) {
-          ctx.drawImage(img, dx, dy, dw, dh);
+    // Intro transition: draw from black
+    if (introProgress !== undefined && introTransition && introTransition !== 'none') {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, width, height);
+      ctx.save();
+      switch (introTransition) {
+        case 'fade':
+        case 'dissolve':
+          ctx.globalAlpha = introProgress;
+          ctx.drawImage(slideCanvas, 0, 0);
+          break;
+        case 'slide-left':
+          ctx.drawImage(slideCanvas, width - width * introProgress, 0);
+          break;
+        case 'slide-right':
+          ctx.drawImage(slideCanvas, -width + width * introProgress, 0);
+          break;
+        case 'slide-up':
+          ctx.drawImage(slideCanvas, 0, height - height * introProgress);
+          break;
+        case 'slide-down':
+          ctx.drawImage(slideCanvas, 0, -height + height * introProgress);
+          break;
+        case 'zoom-in':
+          ctx.globalAlpha = introProgress;
+          ctx.drawImage(slideCanvas, (width - width * introProgress) / 2, (height - height * introProgress) / 2, width * introProgress, height * introProgress);
+          break;
+        case 'zoom-out': {
+          ctx.globalAlpha = introProgress;
+          const s = 2 - introProgress;
+          ctx.drawImage(slideCanvas, (width - width * s) / 2, (height - height * s) / 2, width * s, height * s);
+          break;
         }
+        default:
+          ctx.drawImage(slideCanvas, 0, 0);
+      }
+      ctx.restore();
+      return;
     }
-    ctx.restore();
-  };
+
+    // Normal: draw current slide
+    ctx.drawImage(slideCanvas, 0, 0);
+
+    // Draw transition to next slide
+    if (nextCanvas && transitionProgress > 0 && transition !== 'none') {
+      ctx.save();
+      switch (transition) {
+        case 'fade':
+        case 'dissolve':
+          ctx.globalAlpha = transitionProgress;
+          ctx.drawImage(nextCanvas, 0, 0);
+          break;
+        case 'slide-left':
+          ctx.drawImage(nextCanvas, width - width * transitionProgress, 0);
+          break;
+        case 'slide-right':
+          ctx.drawImage(nextCanvas, -width + width * transitionProgress, 0);
+          break;
+        case 'slide-up':
+          ctx.drawImage(nextCanvas, 0, height - height * transitionProgress);
+          break;
+        case 'slide-down':
+          ctx.drawImage(nextCanvas, 0, -height + height * transitionProgress);
+          break;
+        case 'zoom-in':
+          ctx.globalAlpha = transitionProgress;
+          ctx.drawImage(nextCanvas, (width - width * transitionProgress) / 2, (height - height * transitionProgress) / 2, width * transitionProgress, height * transitionProgress);
+          break;
+        case 'zoom-out': {
+          ctx.globalAlpha = transitionProgress;
+          const s = 2 - transitionProgress;
+          ctx.drawImage(nextCanvas, (width - width * s) / 2, (height - height * s) / 2, width * s, height * s);
+          break;
+        }
+        default:
+          if (transitionProgress > 0.5) ctx.drawImage(nextCanvas, 0, 0);
+      }
+      ctx.restore();
+    }
+  }, []);
 
   const handleExport = async () => {
     if (state.slides.length === 0) return;
@@ -237,44 +189,168 @@ export function ExportPanel() {
           (slide) =>
             new Promise<void>((resolve) => {
               const img = new Image();
-              img.onload = () => {
-                imageCache.set(slide.imageUrl, img);
-                resolve();
-              };
+              img.onload = () => { imageCache.set(slide.imageUrl, img); resolve(); };
               img.onerror = () => resolve();
               img.src = slide.imageUrl;
             })
         )
       );
 
-      // Render frames
+      // Pre-render each slide with text overlays to reusable canvases
+      setStatus('Pre-rendering slides...');
+      const slideCanvases: (OffscreenCanvas | null)[] = state.slides.map(
+        (slide) => renderSlideImage(slide, width, height, imageCache)
+      );
+
+      // Build frame segments to know which frames are static vs transitioning
+      // This lets us skip rendering for static frames
+      interface FrameSegment {
+        slideIndex: number;
+        startFrame: number;
+        endFrame: number; // exclusive
+        isStatic: boolean; // no transition happening
+      }
+      const segments: FrameSegment[] = [];
+      let accumulated = 0;
+      for (let i = 0; i < state.slides.length; i++) {
+        const dur = durations[i] || 5;
+        const slideStartFrame = Math.floor(accumulated * fps);
+        const slideEndFrame = Math.min(totalFrames, Math.ceil((accumulated + dur) * fps));
+
+        const nextSlide = i < state.slides.length - 1 ? state.slides[i + 1] : null;
+        const nextTransDur = nextSlide ? nextSlide.transitionDuration : 0;
+        const introTransDur = (i === 0 && state.settings.introTransition !== 'none') ? state.settings.introTransitionDuration : 0;
+
+        const introEndFrame = Math.min(slideEndFrame, Math.ceil((accumulated + introTransDur) * fps));
+        const transStartFrame = nextTransDur > 0
+          ? Math.max(slideStartFrame, Math.floor((accumulated + dur - nextTransDur) * fps))
+          : slideEndFrame;
+
+        // Intro frames (transition from black)
+        if (introTransDur > 0 && introEndFrame > slideStartFrame) {
+          segments.push({ slideIndex: i, startFrame: slideStartFrame, endFrame: introEndFrame, isStatic: false });
+          if (introEndFrame < transStartFrame) {
+            segments.push({ slideIndex: i, startFrame: introEndFrame, endFrame: transStartFrame, isStatic: true });
+          }
+        } else if (transStartFrame > slideStartFrame) {
+          segments.push({ slideIndex: i, startFrame: slideStartFrame, endFrame: transStartFrame, isStatic: true });
+        }
+
+        // Transition-out frames
+        if (transStartFrame < slideEndFrame && nextTransDur > 0) {
+          segments.push({ slideIndex: i, startFrame: Math.max(transStartFrame, introEndFrame || slideStartFrame), endFrame: slideEndFrame, isStatic: false });
+        }
+
+        accumulated += dur;
+      }
+
+      // Render all frames using segment-aware optimization
       setStatus('Rendering frames...');
-      for (let i = 0; i < totalFrames; i++) {
-        const time = (i / fps);
-        const frameData = await renderFrameToBlob(time, width, height, imageCache);
-        const frameName = `frame${i.toString().padStart(6, '0')}.png`;
-        await ffmpeg.writeFile(frameName, frameData);
-        setProgress(Math.round(((i + 1) / totalFrames) * 50));
-        setStatus(`Rendering frame ${i + 1}/${totalFrames}...`);
+      const compositeCanvas = new OffscreenCanvas(width, height);
+      const compositeCtx = compositeCanvas.getContext('2d')!;
+
+      // We'll collect all raw JPEG blobs, then write them all at once
+      const frameBlobs: Uint8Array[] = new Array(totalFrames);
+      let renderedCount = 0;
+
+      for (const seg of segments) {
+        const slideCanvas = slideCanvases[seg.slideIndex];
+        if (!slideCanvas) continue;
+
+        if (seg.isStatic) {
+          // Render once and reuse for all frames in this segment
+          compositeCtx.clearRect(0, 0, width, height);
+          compositeCtx.drawImage(slideCanvas, 0, 0);
+          const blob = await compositeCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+          const data = new Uint8Array(await blob.arrayBuffer());
+
+          for (let f = seg.startFrame; f < seg.endFrame && f < totalFrames; f++) {
+            frameBlobs[f] = data; // Same reference — no extra memory for duplicates
+            renderedCount++;
+            if (renderedCount % 30 === 0) {
+              setProgress(Math.round((renderedCount / totalFrames) * 45));
+              setStatus(`Rendering frame ${renderedCount}/${totalFrames}...`);
+            }
+          }
+        } else {
+          // Each frame needs individual rendering (transition or intro)
+          const dur = durations[seg.slideIndex] || 5;
+          let slideAccum = 0;
+          for (let k = 0; k < seg.slideIndex; k++) slideAccum += durations[k] || 5;
+
+          const nextSlide = seg.slideIndex < state.slides.length - 1 ? state.slides[seg.slideIndex + 1] : null;
+          const nextCanvas = nextSlide ? slideCanvases[seg.slideIndex + 1] : null;
+
+          for (let f = seg.startFrame; f < seg.endFrame && f < totalFrames; f++) {
+            const time = f / fps;
+            const timeInSlide = time - slideAccum;
+
+            compositeCtx.clearRect(0, 0, width, height);
+
+            // Check intro transition
+            const introTransDur = (seg.slideIndex === 0 && state.settings.introTransition !== 'none') ? state.settings.introTransitionDuration : 0;
+            if (introTransDur > 0 && timeInSlide < introTransDur) {
+              drawTransitionFrame(compositeCtx, slideCanvas, null, width, height, 0, 'none', timeInSlide / introTransDur, state.settings.introTransition);
+            } else {
+              // Check outgoing transition
+              const nextTransDur = nextSlide ? nextSlide.transitionDuration : 0;
+              let transProgress = 0;
+              if (nextTransDur > 0 && timeInSlide > dur - nextTransDur) {
+                transProgress = (timeInSlide - (dur - nextTransDur)) / nextTransDur;
+              }
+              drawTransitionFrame(compositeCtx, slideCanvas, nextCanvas, width, height, transProgress, nextSlide?.transition || 'none');
+            }
+
+            const blob = await compositeCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+            frameBlobs[f] = new Uint8Array(await blob.arrayBuffer());
+            renderedCount++;
+            if (renderedCount % 10 === 0) {
+              setProgress(Math.round((renderedCount / totalFrames) * 45));
+              setStatus(`Rendering frame ${renderedCount}/${totalFrames}...`);
+            }
+          }
+        }
+      }
+
+      // Fill any gaps (shouldn't happen but safety)
+      if (frameBlobs.some(b => !b) && slideCanvases[state.slides.length - 1]) {
+        compositeCtx.clearRect(0, 0, width, height);
+        compositeCtx.drawImage(slideCanvases[state.slides.length - 1]!, 0, 0);
+        const fallback = await compositeCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+        const fallbackData = new Uint8Array(await fallback.arrayBuffer());
+        for (let f = 0; f < totalFrames; f++) {
+          if (!frameBlobs[f]) frameBlobs[f] = fallbackData;
+        }
+      }
+
+      // Write frames to FFmpeg in batches
+      setStatus('Writing frames to encoder...');
+      setProgress(45);
+      const BATCH_SIZE = 50;
+      for (let i = 0; i < totalFrames; i += BATCH_SIZE) {
+        const end = Math.min(i + BATCH_SIZE, totalFrames);
+        for (let j = i; j < end; j++) {
+          await ffmpeg.writeFile(
+            `frame${j.toString().padStart(6, '0')}.jpg`,
+            frameBlobs[j].slice()
+          );
+        }
+        setProgress(45 + Math.round(((i + BATCH_SIZE) / totalFrames) * 5));
       }
 
       // Handle audio
       let hasAudio = false;
       if (state.audioTracks.length > 0) {
         setStatus('Processing audio...');
-        // Write each audio file
         for (let i = 0; i < state.audioTracks.length; i++) {
           const track = state.audioTracks[i];
           const audioData = await fetchFile(track.url);
           await ffmpeg.writeFile(`audio${i}.mp3`, audioData);
         }
 
-        // Concatenate audio files
         if (state.audioTracks.length === 1) {
-          // Single audio file - just rename
           await ffmpeg.exec(['-i', 'audio0.mp3', '-c', 'copy', 'combined_audio.mp3']);
         } else {
-          // Multiple audio files - create concat list
           let concatList = '';
           for (let i = 0; i < state.audioTracks.length; i++) {
             concatList += `file 'audio${i}.mp3'\n`;
@@ -286,7 +362,6 @@ export function ExportPanel() {
           ]);
         }
 
-        // Apply fade effects
         const audioFilters: string[] = [];
         if (state.settings.fadeInMusic) {
           audioFilters.push(`afade=t=in:st=0:d=${state.settings.fadeDuration}`);
@@ -314,13 +389,13 @@ export function ExportPanel() {
         hasAudio = true;
       }
 
-      // Encode video
+      // Encode video with optimized settings
       setStatus('Encoding video...');
       setProgress(50);
 
       const ffmpegArgs = [
         '-framerate', fps.toString(),
-        '-i', 'frame%06d.png',
+        '-i', 'frame%06d.jpg',
       ];
 
       if (hasAudio) {
@@ -330,7 +405,8 @@ export function ExportPanel() {
       ffmpegArgs.push(
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
-        '-preset', 'fast',
+        '-preset', 'ultrafast',
+        '-tune', 'stillimage',
         '-crf', '23',
       );
 
@@ -343,27 +419,21 @@ export function ExportPanel() {
       await ffmpeg.exec(ffmpegArgs);
 
       setStatus('Reading output...');
-      setProgress(90);
+      setProgress(95);
 
       const data = await ffmpeg.readFile('output.mp4');
       const blob = new Blob([data], { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
 
-      // Download
       const a = document.createElement('a');
       a.href = url;
       a.download = 'slideshow.mp4';
       a.click();
       URL.revokeObjectURL(url);
 
-      // Cleanup files in FFmpeg
+      // Cleanup
       for (let i = 0; i < totalFrames; i++) {
-        const frameName = `frame${i.toString().padStart(6, '0')}.png`;
-        try {
-          await ffmpeg.deleteFile(frameName);
-        } catch {
-          // ignore
-        }
+        try { await ffmpeg.deleteFile(`frame${i.toString().padStart(6, '0')}.jpg`); } catch { /* ignore */ }
       }
 
       setStatus('Export complete!');

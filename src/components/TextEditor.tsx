@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSlideshow } from '../store';
 import type { Slide, TextOverlay } from '../types';
 
@@ -16,14 +16,14 @@ export function TextEditor({ slide, slideIndex }: Props) {
     addTextOverlay(slide.id);
   };
 
-  const handleUpdateOverlay = (overlayId: string, updates: Partial<TextOverlay>) => {
+  const handleUpdateOverlay = useCallback((overlayId: string, updates: Partial<TextOverlay>) => {
     dispatch({
       type: 'UPDATE_TEXT_OVERLAY',
       slideId: slide.id,
       overlayId,
       updates,
     });
-  };
+  }, [dispatch, slide.id]);
 
   const handleRemoveOverlay = (overlayId: string) => {
     dispatch({
@@ -147,23 +147,40 @@ interface DraggableTextProps {
 
 function DraggableText({ overlay, isSelected, onSelect, onUpdate, containerRef }: DraggableTextProps) {
   const textRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const isDragging = useRef(false);
+  const isResizing = useRef(false);
+  const [isEditing, setIsEditing] = useState(false);
   const startPos = useRef({ x: 0, y: 0 });
   const startOverlayPos = useRef({ x: 0, y: 0 });
+  const startFontSize = useRef(0);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging.current || !containerRef.current) return;
+      if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
-      const deltaX = ((e.clientX - startPos.current.x) / rect.width) * 100;
-      const deltaY = ((e.clientY - startPos.current.y) / rect.height) * 100;
-      const newX = Math.max(0, Math.min(100, startOverlayPos.current.x + deltaX));
-      const newY = Math.max(0, Math.min(100, startOverlayPos.current.y + deltaY));
-      onUpdate({ x: newX, y: newY });
+
+      if (isResizing.current) {
+        // Resize: vertical drag distance scales font size
+        const deltaY = e.clientY - startPos.current.y;
+        // scale factor: every 2px of drag = 1pt font change
+        const newSize = Math.max(8, Math.min(200, startFontSize.current + deltaY / 2));
+        onUpdate({ fontSize: Math.round(newSize) });
+        return;
+      }
+
+      if (isDragging.current) {
+        const deltaX = ((e.clientX - startPos.current.x) / rect.width) * 100;
+        const deltaY = ((e.clientY - startPos.current.y) / rect.height) * 100;
+        const newX = Math.max(0, Math.min(100, startOverlayPos.current.x + deltaX));
+        const newY = Math.max(0, Math.min(100, startOverlayPos.current.y + deltaY));
+        onUpdate({ x: newX, y: newY });
+      }
     };
 
     const handleMouseUp = () => {
       isDragging.current = false;
+      isResizing.current = false;
     };
 
     document.addEventListener('mousemove', handleMouseMove);
@@ -175,10 +192,40 @@ function DraggableText({ overlay, isSelected, onSelect, onUpdate, containerRef }
   }, [containerRef, onUpdate]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
+    if (isEditing) return; // don't drag while editing
     e.preventDefault();
     isDragging.current = true;
     startPos.current = { x: e.clientX, y: e.clientY };
     startOverlayPos.current = { x: overlay.x, y: overlay.y };
+    onSelect();
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsEditing(true);
+    onSelect();
+    // Focus the input after React renders it
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const handleInputBlur = () => {
+    setIsEditing(false);
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      setIsEditing(false);
+    }
+    e.stopPropagation();
+  };
+
+  const handleResizeMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isResizing.current = true;
+    startPos.current = { x: e.clientX, y: e.clientY };
+    startFontSize.current = overlay.fontSize;
     onSelect();
   };
 
@@ -197,8 +244,34 @@ function DraggableText({ overlay, isSelected, onSelect, onUpdate, containerRef }
         transform: 'translate(-50%, -50%)',
       }}
       onMouseDown={handleMouseDown}
+      onDoubleClick={handleDoubleClick}
     >
-      {overlay.text}
+      {isEditing ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={overlay.text}
+          onChange={(e) => onUpdate({ text: e.target.value })}
+          onBlur={handleInputBlur}
+          onKeyDown={handleInputKeyDown}
+          className="inline-text-input"
+          style={{
+            fontSize: 'inherit',
+            color: 'inherit',
+            fontFamily: 'inherit',
+            fontWeight: 'inherit',
+            fontStyle: 'inherit',
+          }}
+        />
+      ) : (
+        overlay.text
+      )}
+      {isSelected && !isEditing && (
+        <div
+          className="resize-handle"
+          onMouseDown={handleResizeMouseDown}
+        />
+      )}
     </div>
   );
 }

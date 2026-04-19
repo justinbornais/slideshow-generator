@@ -404,6 +404,30 @@ input[type="color"] {
   outline-offset: 4px;
 }
 
+.inline-text-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  text-shadow: inherit;
+  padding: 0;
+  min-width: 40px;
+}
+
+.resize-handle {
+  position: absolute;
+  bottom: -6px;
+  right: -6px;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border: 2px solid #fff;
+  border-radius: 2px;
+  cursor: nwse-resize;
+}
+
 .text-controls {
   padding: 8px;
   background: var(--bg-secondary);

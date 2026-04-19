@@ -127,6 +127,47 @@ export function SettingsPanel() {
         <h3>Transitions</h3>
         <div className="setting-row">
           <label>
+            Intro transition:
+            <select
+              value={settings.introTransition}
+              onChange={(e) =>
+                dispatch({
+                  type: 'UPDATE_SETTINGS',
+                  updates: { introTransition: e.target.value as TransitionType },
+                })
+              }
+            >
+              {TRANSITIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {settings.introTransition !== 'none' && (
+          <div className="setting-row">
+            <label>
+              Intro duration (s):
+              <input
+                type="number"
+                value={settings.introTransitionDuration}
+                onChange={(e) =>
+                  dispatch({
+                    type: 'UPDATE_SETTINGS',
+                    updates: { introTransitionDuration: Math.max(0.1, Number(e.target.value)) },
+                  })
+                }
+                min={0.1}
+                max={5}
+                step={0.1}
+                className="input-sm"
+              />
+            </label>
+          </div>
+        )}
+        <div className="setting-row">
+          <label>
             Default transition:
             <select
               value={settings.defaultTransition}

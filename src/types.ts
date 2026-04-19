@@ -37,6 +37,8 @@ export interface SlideshowSettings {
   fadeDuration: number; // seconds for fade in/out
   defaultTransition: TransitionType;
   defaultTransitionDuration: number;
+  introTransition: TransitionType;
+  introTransitionDuration: number;
   outputFormat: 'mp4';
   fps: number;
   resolution: { width: number; height: number };

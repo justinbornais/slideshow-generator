@@ -16,6 +16,8 @@ const defaultSettings: SlideshowSettings = {
   fadeDuration: 2,
   defaultTransition: 'fade',
   defaultTransitionDuration: 1,
+  introTransition: 'none',
+  introTransitionDuration: 1,
   outputFormat: 'mp4',
   fps: 30,
   resolution: { width: 1920, height: 1080 },
