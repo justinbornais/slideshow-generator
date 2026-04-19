@@ -39,6 +39,8 @@ export interface SlideshowSettings {
   defaultTransitionDuration: number;
   introTransition: TransitionType;
   introTransitionDuration: number;
+  endingTransition: TransitionType;
+  endingTransitionDuration: number;
   outputFormat: 'mp4';
   fps: number;
   resolution: { width: number; height: number };

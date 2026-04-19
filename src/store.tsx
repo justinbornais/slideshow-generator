@@ -18,9 +18,11 @@ const defaultSettings: SlideshowSettings = {
   defaultTransitionDuration: 1,
   introTransition: 'none',
   introTransitionDuration: 1,
+  endingTransition: 'none',
+  endingTransitionDuration: 1,
   outputFormat: 'mp4',
   fps: 30,
-  resolution: { width: 1920, height: 1080 },
+  resolution: { width: 1280, height: 720 },
 };
 
 const initialState: SlideshowState = {

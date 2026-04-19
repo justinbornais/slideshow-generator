@@ -4,6 +4,8 @@ import { toBlobURL, fetchFile } from '@ffmpeg/util';
 import { useSlideshow } from '../store';
 import type { Slide, TransitionType } from '../types';
 
+const FRAME_IMAGE_QUALITY = 0.8;
+
 export function ExportPanel() {
   const { state, getComputedDurations } = useSlideshow();
   const [isExporting, setIsExporting] = useState(false);
@@ -83,7 +85,9 @@ export function ExportPanel() {
     transitionProgress: number,
     transition: TransitionType,
     introProgress?: number,
-    introTransition?: TransitionType
+    introTransition?: TransitionType,
+    endingProgress?: number,
+    endingTransition?: TransitionType
   ) => {
     // Intro transition: draw from black
     if (introProgress !== undefined && introTransition && introTransition !== 'none') {
@@ -120,6 +124,61 @@ export function ExportPanel() {
         }
         default:
           ctx.drawImage(slideCanvas, 0, 0);
+      }
+      ctx.restore();
+      return;
+    }
+
+    if (endingProgress !== undefined && endingTransition && endingTransition !== 'none') {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, width, height);
+      ctx.save();
+      switch (endingTransition) {
+        case 'fade':
+        case 'dissolve':
+          ctx.globalAlpha = 1 - endingProgress;
+          ctx.drawImage(slideCanvas, 0, 0);
+          break;
+        case 'slide-left':
+          ctx.drawImage(slideCanvas, -width * endingProgress, 0);
+          break;
+        case 'slide-right':
+          ctx.drawImage(slideCanvas, width * endingProgress, 0);
+          break;
+        case 'slide-up':
+          ctx.drawImage(slideCanvas, 0, -height * endingProgress);
+          break;
+        case 'slide-down':
+          ctx.drawImage(slideCanvas, 0, height * endingProgress);
+          break;
+        case 'zoom-in': {
+          const scale = 1 + endingProgress;
+          ctx.globalAlpha = 1 - endingProgress;
+          ctx.drawImage(
+            slideCanvas,
+            (width - width * scale) / 2,
+            (height - height * scale) / 2,
+            width * scale,
+            height * scale
+          );
+          break;
+        }
+        case 'zoom-out': {
+          const scale = Math.max(0.4, 1 - endingProgress * 0.6);
+          ctx.globalAlpha = 1 - endingProgress;
+          ctx.drawImage(
+            slideCanvas,
+            (width - width * scale) / 2,
+            (height - height * scale) / 2,
+            width * scale,
+            height * scale
+          );
+          break;
+        }
+        default:
+          if (endingProgress < 0.5) {
+            ctx.drawImage(slideCanvas, 0, 0);
+          }
       }
       ctx.restore();
       return;
@@ -165,6 +224,14 @@ export function ExportPanel() {
       ctx.restore();
     }
   }, []);
+
+  const encodeFrame = async (canvas: OffscreenCanvas): Promise<Uint8Array> => {
+    const blob = await canvas.convertToBlob({
+      type: 'image/jpeg',
+      quality: FRAME_IMAGE_QUALITY,
+    });
+    return new Uint8Array(await blob.arrayBuffer());
+  };
 
   const handleExport = async () => {
     if (state.slides.length === 0) return;
@@ -218,39 +285,60 @@ export function ExportPanel() {
         const slideEndFrame = Math.min(totalFrames, Math.ceil((accumulated + dur) * fps));
 
         const nextSlide = i < state.slides.length - 1 ? state.slides[i + 1] : null;
+        const isLastSlide = i === state.slides.length - 1;
         const nextTransDur = nextSlide ? nextSlide.transitionDuration : 0;
         const introTransDur = (i === 0 && state.settings.introTransition !== 'none') ? state.settings.introTransitionDuration : 0;
+        const endingTransDur = (isLastSlide && state.settings.endingTransition !== 'none')
+          ? Math.min(dur, state.settings.endingTransitionDuration)
+          : 0;
 
         const introEndFrame = Math.min(slideEndFrame, Math.ceil((accumulated + introTransDur) * fps));
+        const firstAvailableFrame = introTransDur > 0 ? introEndFrame : slideStartFrame;
         const transStartFrame = nextTransDur > 0
           ? Math.max(slideStartFrame, Math.floor((accumulated + dur - nextTransDur) * fps))
           : slideEndFrame;
+        const endingStartFrame = endingTransDur > 0
+          ? Math.max(slideStartFrame, Math.floor((accumulated + dur - endingTransDur) * fps))
+          : slideEndFrame;
+        const staticEndFrame = Math.min(transStartFrame, endingStartFrame);
 
         // Intro frames (transition from black)
         if (introTransDur > 0 && introEndFrame > slideStartFrame) {
           segments.push({ slideIndex: i, startFrame: slideStartFrame, endFrame: introEndFrame, isStatic: false });
-          if (introEndFrame < transStartFrame) {
-            segments.push({ slideIndex: i, startFrame: introEndFrame, endFrame: transStartFrame, isStatic: true });
+          if (introEndFrame < staticEndFrame) {
+            segments.push({ slideIndex: i, startFrame: introEndFrame, endFrame: staticEndFrame, isStatic: true });
           }
-        } else if (transStartFrame > slideStartFrame) {
-          segments.push({ slideIndex: i, startFrame: slideStartFrame, endFrame: transStartFrame, isStatic: true });
+        } else if (staticEndFrame > slideStartFrame) {
+          segments.push({ slideIndex: i, startFrame: slideStartFrame, endFrame: staticEndFrame, isStatic: true });
         }
 
         // Transition-out frames
         if (transStartFrame < slideEndFrame && nextTransDur > 0) {
-          segments.push({ slideIndex: i, startFrame: Math.max(transStartFrame, introEndFrame || slideStartFrame), endFrame: slideEndFrame, isStatic: false });
+          segments.push({
+            slideIndex: i,
+            startFrame: Math.max(transStartFrame, staticEndFrame, firstAvailableFrame),
+            endFrame: slideEndFrame,
+            isStatic: false,
+          });
+        }
+
+        if (endingStartFrame < slideEndFrame && endingTransDur > 0) {
+          segments.push({
+            slideIndex: i,
+            startFrame: Math.max(endingStartFrame, staticEndFrame, firstAvailableFrame),
+            endFrame: slideEndFrame,
+            isStatic: false,
+          });
         }
 
         accumulated += dur;
       }
 
-      // Render all frames using segment-aware optimization
+      // Render and write frames using segment-aware optimization.
+      // This avoids holding the entire frame sequence in memory.
       setStatus('Rendering frames...');
       const compositeCanvas = new OffscreenCanvas(width, height);
       const compositeCtx = compositeCanvas.getContext('2d')!;
-
-      // We'll collect all raw JPEG blobs, then write them all at once
-      const frameBlobs: Uint8Array[] = new Array(totalFrames);
       let renderedCount = 0;
 
       for (const seg of segments) {
@@ -261,11 +349,13 @@ export function ExportPanel() {
           // Render once and reuse for all frames in this segment
           compositeCtx.clearRect(0, 0, width, height);
           compositeCtx.drawImage(slideCanvas, 0, 0);
-          const blob = await compositeCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-          const data = new Uint8Array(await blob.arrayBuffer());
+          const encodedFrame = await encodeFrame(compositeCanvas);
 
           for (let f = seg.startFrame; f < seg.endFrame && f < totalFrames; f++) {
-            frameBlobs[f] = data; // Same reference — no extra memory for duplicates
+            await ffmpeg.writeFile(
+              `frame${f.toString().padStart(6, '0')}.jpg`,
+              encodedFrame.slice()
+            );
             renderedCount++;
             if (renderedCount % 30 === 0) {
               setProgress(Math.round((renderedCount / totalFrames) * 45));
@@ -289,8 +379,37 @@ export function ExportPanel() {
 
             // Check intro transition
             const introTransDur = (seg.slideIndex === 0 && state.settings.introTransition !== 'none') ? state.settings.introTransitionDuration : 0;
+            const endingTransDur =
+              seg.slideIndex === state.slides.length - 1 && state.settings.endingTransition !== 'none'
+                ? Math.min(dur, state.settings.endingTransitionDuration)
+                : 0;
+
             if (introTransDur > 0 && timeInSlide < introTransDur) {
-              drawTransitionFrame(compositeCtx, slideCanvas, null, width, height, 0, 'none', timeInSlide / introTransDur, state.settings.introTransition);
+              drawTransitionFrame(
+                compositeCtx,
+                slideCanvas,
+                null,
+                width,
+                height,
+                0,
+                'none',
+                timeInSlide / introTransDur,
+                state.settings.introTransition
+              );
+            } else if (endingTransDur > 0 && timeInSlide > dur - endingTransDur) {
+              drawTransitionFrame(
+                compositeCtx,
+                slideCanvas,
+                null,
+                width,
+                height,
+                0,
+                'none',
+                undefined,
+                undefined,
+                (timeInSlide - (dur - endingTransDur)) / endingTransDur,
+                state.settings.endingTransition
+              );
             } else {
               // Check outgoing transition
               const nextTransDur = nextSlide ? nextSlide.transitionDuration : 0;
@@ -301,8 +420,10 @@ export function ExportPanel() {
               drawTransitionFrame(compositeCtx, slideCanvas, nextCanvas, width, height, transProgress, nextSlide?.transition || 'none');
             }
 
-            const blob = await compositeCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-            frameBlobs[f] = new Uint8Array(await blob.arrayBuffer());
+            await ffmpeg.writeFile(
+              `frame${f.toString().padStart(6, '0')}.jpg`,
+              (await encodeFrame(compositeCanvas)).slice()
+            );
             renderedCount++;
             if (renderedCount % 10 === 0) {
               setProgress(Math.round((renderedCount / totalFrames) * 45));
@@ -312,31 +433,7 @@ export function ExportPanel() {
         }
       }
 
-      // Fill any gaps (shouldn't happen but safety)
-      if (frameBlobs.some(b => !b) && slideCanvases[state.slides.length - 1]) {
-        compositeCtx.clearRect(0, 0, width, height);
-        compositeCtx.drawImage(slideCanvases[state.slides.length - 1]!, 0, 0);
-        const fallback = await compositeCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-        const fallbackData = new Uint8Array(await fallback.arrayBuffer());
-        for (let f = 0; f < totalFrames; f++) {
-          if (!frameBlobs[f]) frameBlobs[f] = fallbackData;
-        }
-      }
-
-      // Write frames to FFmpeg in batches
-      setStatus('Writing frames to encoder...');
       setProgress(45);
-      const BATCH_SIZE = 50;
-      for (let i = 0; i < totalFrames; i += BATCH_SIZE) {
-        const end = Math.min(i + BATCH_SIZE, totalFrames);
-        for (let j = i; j < end; j++) {
-          await ffmpeg.writeFile(
-            `frame${j.toString().padStart(6, '0')}.jpg`,
-            frameBlobs[j].slice()
-          );
-        }
-        setProgress(45 + Math.round(((i + BATCH_SIZE) / totalFrames) * 5));
-      }
 
       // Handle audio
       let hasAudio = false;

@@ -70,6 +70,7 @@ export function Preview() {
 
       const { index, slide, timeInSlide, duration } = info;
       const nextSlide = index < state.slides.length - 1 ? state.slides[index + 1] : null;
+      const isLastSlide = index === state.slides.length - 1;
 
       // Intro transition for first slide
       if (index === 0 && state.settings.introTransition !== 'none') {
@@ -79,7 +80,24 @@ export function Preview() {
           ctx.fillStyle = '#000';
           ctx.fillRect(0, 0, width, height);
           drawTransition(ctx, slide, width, height, introProgress, state.settings.introTransition);
-          drawTextOverlays(ctx, slide, width, height);
+          drawTextOverlays(ctx, slide, width, height, introProgress);
+          return;
+        }
+      }
+
+      if (isLastSlide && state.settings.endingTransition !== 'none') {
+        const endingDur = Math.min(duration, state.settings.endingTransitionDuration);
+        if (timeInSlide > duration - endingDur) {
+          const endingProgress = (timeInSlide - (duration - endingDur)) / endingDur;
+          drawExitTransition(
+            ctx,
+            slide,
+            width,
+            height,
+            endingProgress,
+            state.settings.endingTransition
+          );
+          drawTextOverlays(ctx, slide, width, height, 1 - endingProgress);
           return;
         }
       }
@@ -100,7 +118,7 @@ export function Preview() {
       // Draw text overlays
       drawTextOverlays(ctx, slide, width, height);
     },
-    [state.slides, state.settings.resolution, getCurrentSlideInfo]
+    [state.slides, state.settings, getCurrentSlideInfo]
   );
 
   // Image cache
@@ -222,14 +240,87 @@ export function Preview() {
     ctx.restore();
   };
 
+  const drawExitTransition = (
+    ctx: CanvasRenderingContext2D,
+    slide: Slide,
+    width: number,
+    height: number,
+    progress: number,
+    transition: TransitionType
+  ) => {
+    const img = getImage(slide.imageUrl);
+    if (!img) return;
+
+    ctx.save();
+
+    const imgRatio = img.width / img.height;
+    const canvasRatio = width / height;
+    let drawWidth, drawHeight, drawX, drawY;
+    if (imgRatio > canvasRatio) {
+      drawHeight = height;
+      drawWidth = height * imgRatio;
+      drawX = (width - drawWidth) / 2;
+      drawY = 0;
+    } else {
+      drawWidth = width;
+      drawHeight = width / imgRatio;
+      drawX = 0;
+      drawY = (height - drawHeight) / 2;
+    }
+
+    switch (transition) {
+      case 'fade':
+      case 'dissolve':
+        ctx.globalAlpha = 1 - progress;
+        ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+        break;
+      case 'slide-left':
+        ctx.drawImage(img, drawX - width * progress, drawY, drawWidth, drawHeight);
+        break;
+      case 'slide-right':
+        ctx.drawImage(img, drawX + width * progress, drawY, drawWidth, drawHeight);
+        break;
+      case 'slide-up':
+        ctx.drawImage(img, drawX, drawY - height * progress, drawWidth, drawHeight);
+        break;
+      case 'slide-down':
+        ctx.drawImage(img, drawX, drawY + height * progress, drawWidth, drawHeight);
+        break;
+      case 'zoom-in': {
+        const scale = 1 + progress;
+        ctx.globalAlpha = 1 - progress;
+        const zw = drawWidth * scale;
+        const zh = drawHeight * scale;
+        ctx.drawImage(img, (width - zw) / 2, (height - zh) / 2, zw, zh);
+        break;
+      }
+      case 'zoom-out': {
+        const scale = Math.max(0.4, 1 - progress * 0.6);
+        ctx.globalAlpha = 1 - progress;
+        const zw = drawWidth * scale;
+        const zh = drawHeight * scale;
+        ctx.drawImage(img, (width - zw) / 2, (height - zh) / 2, zw, zh);
+        break;
+      }
+      default:
+        if (progress < 0.5) {
+          ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+        }
+    }
+
+    ctx.restore();
+  };
+
   const drawTextOverlays = (
     ctx: CanvasRenderingContext2D,
     slide: Slide,
     width: number,
-    height: number
+    height: number,
+    alpha = 1
   ) => {
     for (const overlay of slide.textOverlays) {
       ctx.save();
+      ctx.globalAlpha = alpha;
       const x = (overlay.x / 100) * width;
       const y = (overlay.y / 100) * height;
       const scaledFontSize = (overlay.fontSize / 1080) * height;

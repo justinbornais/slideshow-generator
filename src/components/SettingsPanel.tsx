@@ -168,6 +168,47 @@ export function SettingsPanel() {
         )}
         <div className="setting-row">
           <label>
+            Ending transition:
+            <select
+              value={settings.endingTransition}
+              onChange={(e) =>
+                dispatch({
+                  type: 'UPDATE_SETTINGS',
+                  updates: { endingTransition: e.target.value as TransitionType },
+                })
+              }
+            >
+              {TRANSITIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {settings.endingTransition !== 'none' && (
+          <div className="setting-row">
+            <label>
+              Ending duration (s):
+              <input
+                type="number"
+                value={settings.endingTransitionDuration}
+                onChange={(e) =>
+                  dispatch({
+                    type: 'UPDATE_SETTINGS',
+                    updates: { endingTransitionDuration: Math.max(0.1, Number(e.target.value)) },
+                  })
+                }
+                min={0.1}
+                max={5}
+                step={0.1}
+                className="input-sm"
+              />
+            </label>
+          </div>
+        )}
+        <div className="setting-row">
+          <label>
             Default transition:
             <select
               value={settings.defaultTransition}
@@ -325,8 +366,8 @@ export function SettingsPanel() {
                 });
               }}
             >
-              <option value="1920x1080">1920×1080 (Full HD)</option>
               <option value="1280x720">1280×720 (HD)</option>
+              <option value="1920x1080">1920×1080 (Full HD)</option>
               <option value="854x480">854×480 (SD)</option>
               <option value="3840x2160">3840×2160 (4K)</option>
             </select>
